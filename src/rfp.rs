@@ -96,6 +96,42 @@ impl From<Encoding> for i32 {
     }
 }
 
+pub(crate) struct FrameRectangle {
+    position: (u16, u16),
+    size: (u16, u16),
+    encoding: Encoding,
+    buf: Vec<u8>,
+}
+
+impl FrameRectangle {
+    pub(crate) fn new_raw_frame(size: (u16, u16), buf: Vec<u8>) -> Self {
+        Self {
+            position: (0, 0),
+            encoding: Encoding::Raw,
+            size,
+            buf,
+        }
+    }
+
+    pub(crate) fn new_zrle_frame(size: (u16, u16), buf: Vec<u8>) -> Self {
+        Self {
+            position: (0, 0),
+            encoding: Encoding::Zrle,
+            size,
+            buf,
+        }
+    }
+
+    pub(crate) fn new_cursor(size: (u16, u16), buf: Vec<u8>) -> Self {
+        Self {
+            position: (size.0 / 2, size.1 / 2),
+            size,
+            encoding: Encoding::Cursor,
+            buf,
+        }
+    }
+}
+
 /// Handshake with client.
 /// From TCP connection established to initialization messages exchanged.
 pub(crate) async fn handshake(
@@ -265,30 +301,24 @@ pub(crate) async fn read_message(
 
 pub(crate) async fn write_frame(
     stream: &mut TcpStream,
-    position: (u16, u16),
-    size: (u16, u16),
-    encoding: Encoding,
-    frame: &[u8],
+    rectangles: &[FrameRectangle],
 ) -> anyhow::Result<()> {
     // 7.6.1. FramebufferUpdate
-    // message-type (0u8), padding (0u8), number-of-rectangles (1u16),
-    stream.write_all(&[0, 0, 0, 1]).await?;
-    stream.write_u16(position.0).await?;
-    stream.write_u16(position.1).await?;
-    stream.write_u16(size.0).await?;
-    stream.write_u16(size.1).await?;
-    stream.write_i32(encoding.into()).await?;
-    match encoding {
-        Encoding::Raw => (), // just send the fram buffer
-        Encoding::Zrle => {
-            // 7.7.6. ZRLE
-            stream.write_u32(frame.len().try_into()?).await?;
-        }
-        Encoding::Cursor => todo!(),
-        Encoding::Other(_) => todo!(),
-    }
+    stream.write_u16(0).await?; // message-type + padding
+    stream.write_u16(rectangles.len().try_into()?).await?;
 
-    stream.write_all(frame).await?;
+    for rect in rectangles {
+        stream.write_u16(rect.position.0).await?;
+        stream.write_u16(rect.position.1).await?;
+        stream.write_u16(rect.size.0).await?;
+        stream.write_u16(rect.size.1).await?;
+        stream.write_i32(rect.encoding.into()).await?;
+        if rect.encoding == Encoding::Zrle {
+            // 7.7.6. ZRLE
+            stream.write_u32(rect.buf.len().try_into()?).await?;
+        }
+        stream.write_all(&rect.buf).await?;
+    }
     Ok(())
 }
 
