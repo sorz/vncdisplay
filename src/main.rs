@@ -49,8 +49,8 @@ async fn handle_client(
         .await
         .context("RFP handshaking with client")?;
     let mut buf = vec![0u8; 0];
-    loop {
-        let msg = rfp::read_message(&mut stream, &mut buf).await?;
+    while let Some(msg) = rfp::read_message(&mut stream, &mut buf).await? {
         debug!("Receive client message: {:?}", msg);
     }
+    Ok(())
 }

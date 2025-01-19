@@ -1,3 +1,5 @@
+use std::io;
+
 use anyhow::{bail, Context};
 use byteorder_lite::{WriteBytesExt, BE};
 use log::{debug, info, warn};
@@ -181,15 +183,17 @@ pub(crate) async fn handshake(
 pub(crate) async fn read_message(
     stream: &mut TcpStream,
     buf: &mut Vec<u8>,
-) -> anyhow::Result<ClientMessage> {
-    let msg = match stream.read_u8().await? {
-        0 => {
+) -> anyhow::Result<Option<ClientMessage>> {
+    let msg = match stream.read_u8().await {
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err.into()),
+        Ok(0) => {
             // SetPixelFormat
             buf.resize(3 + 16, 0);
             stream.read_exact(buf).await?;
             ClientMessage::SetPixelFormat
         }
-        2 => {
+        Ok(2) => {
             // SetEncodings
             stream.read_u8().await?; // padding
             let len: usize = stream.read_u16().await?.into();
@@ -202,25 +206,25 @@ pub(crate) async fn read_message(
                 .collect();
             ClientMessage::SetEncodings(encodings)
         }
-        3 => {
+        Ok(3) => {
             // FramebufferUpdateRequest
             buf.resize(1 + 2 + 2 + 2 + 2, 0);
             stream.read_exact(buf).await?;
             ClientMessage::FramebufferUpdateRequest
         }
-        4 => {
+        Ok(4) => {
             // KeyEvent
             buf.resize(1 + 2 + 4, 0);
             stream.read_exact(buf).await?;
             ClientMessage::KeyEvent
         }
-        5 => {
+        Ok(5) => {
             // PointerEvent
             buf.resize(1 + 2 + 2, 0);
             stream.read_exact(buf).await?;
             ClientMessage::PointerEvent
         }
-        6 => {
+        Ok(6) => {
             // ClientCutText
             buf.resize(3, 0);
             stream.read_exact(buf).await?; // drop padding
@@ -229,10 +233,9 @@ pub(crate) async fn read_message(
             stream.read_exact(buf).await?;
             ClientMessage::ClientCutText
         }
-
-        n => bail!("Unknown client message: {}", n),
+        Ok(n) => bail!("Unknown client message: {}", n),
     };
-    Ok(msg)
+    Ok(Some(msg))
 }
 
 impl PixelFormat {
