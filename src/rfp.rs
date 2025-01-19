@@ -1,8 +1,6 @@
-use std::{io::{self, Write}, u32};
-
 use anyhow::{bail, Context};
 use byteorder_lite::{WriteBytesExt, BE};
-use log::debug;
+use log::{debug, info, warn};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -21,7 +19,6 @@ enum RfpVersion {
     V3_7,
     V3_8,
 }
-
 
 /// RFC6143 §7.4. Pixel Format Data Structure
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +47,37 @@ static PIXEL_FOMRAT_RGB888: &PixelFormat = &PixelFormat {
     green_shift: 8,
     blue_shift: 0,
 };
+
+/// RFC6143 §7.5. Client-to-Server Messages
+#[derive(Debug, Clone)]
+pub(crate) enum ClientMessage {
+    SetPixelFormat,
+    SetEncodings(Vec<Encoding>),
+    FramebufferUpdateRequest,
+    KeyEvent,
+    PointerEvent,
+    ClientCutText,
+}
+
+/// RFC6143 §8.4. RFB Encoding Types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Encoding {
+    Raw,    // 0
+    Zrle,   // 16
+    Cursor, // -239
+    Other(i32),
+}
+
+impl From<i32> for Encoding {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => Self::Raw,
+            16 => Self::Zrle,
+            -239 => Self::Cursor,
+            n => Self::Other(n),
+        }
+    }
+}
 
 /// Handshake with client.
 /// From TCP connection established to initialization messages exchanged.
@@ -144,8 +172,67 @@ pub(crate) async fn handshake(
     stream.write_all(&PIXEL_FOMRAT_RGB888.encode()).await?;
     let name_len: u32 = name.len().try_into().unwrap_or(u32::MAX);
     stream.write_u32(name_len).await?;
-    stream.write_all(&name.as_bytes()[..name_len as usize]).await?;
+    stream
+        .write_all(&name.as_bytes()[..name_len as usize])
+        .await?;
     Ok(())
+}
+
+pub(crate) async fn read_message(
+    stream: &mut TcpStream,
+    buf: &mut Vec<u8>,
+) -> anyhow::Result<ClientMessage> {
+    let msg = match stream.read_u8().await? {
+        0 => {
+            // SetPixelFormat
+            buf.resize(3 + 16, 0);
+            stream.read_exact(buf).await?;
+            ClientMessage::SetPixelFormat
+        }
+        2 => {
+            // SetEncodings
+            stream.read_u8().await?; // padding
+            let len: usize = stream.read_u16().await?.into();
+            buf.resize(len * 4, 0);
+            stream.read_exact(buf).await?;
+            let encodings: Vec<Encoding> = buf
+                .as_slice()
+                .chunks(4)
+                .map(|b| i32::from_be_bytes(b.try_into().unwrap()).into())
+                .collect();
+            ClientMessage::SetEncodings(encodings)
+        }
+        3 => {
+            // FramebufferUpdateRequest
+            buf.resize(1 + 2 + 2 + 2 + 2, 0);
+            stream.read_exact(buf).await?;
+            ClientMessage::FramebufferUpdateRequest
+        }
+        4 => {
+            // KeyEvent
+            buf.resize(1 + 2 + 4, 0);
+            stream.read_exact(buf).await?;
+            ClientMessage::KeyEvent
+        }
+        5 => {
+            // PointerEvent
+            buf.resize(1 + 2 + 2, 0);
+            stream.read_exact(buf).await?;
+            ClientMessage::PointerEvent
+        }
+        6 => {
+            // ClientCutText
+            buf.resize(3, 0);
+            stream.read_exact(buf).await?; // drop padding
+            let len = stream.read_u32().await?;
+            buf.resize(len.try_into()?, 0);
+            stream.read_exact(buf).await?;
+            ClientMessage::ClientCutText
+        }
+
+        n => bail!("Unknown client message: {}", n),
+    };
+    Ok(msg)
 }
 
 impl PixelFormat {
@@ -157,7 +244,7 @@ impl PixelFormat {
         writer.write_u8(self.depth).unwrap();
         writer.write_u8(self.big_endian_flag.into()).unwrap();
         writer.write_u8(self.true_color_flag.into()).unwrap();
-    
+
         writer.write_u16::<BE>(self.red_max).unwrap();
         writer.write_u16::<BE>(self.green_max).unwrap();
         writer.write_u16::<BE>(self.blue_max).unwrap();

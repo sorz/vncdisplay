@@ -20,6 +20,4 @@ pub(crate) struct Args {
     /// Desktop name
     #[arg(short, long, default_value = "VNC Display")]
     pub(crate) name: String,
-
-
 }
