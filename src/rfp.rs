@@ -1,4 +1,7 @@
+use std::{io::{self, Write}, u32};
+
 use anyhow::{bail, Context};
+use byteorder_lite::{WriteBytesExt, BE};
 use log::debug;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -19,11 +22,41 @@ enum RfpVersion {
     V3_8,
 }
 
+
+/// RFC6143 §7.4. Pixel Format Data Structure
+#[derive(Debug, Clone, Copy)]
+struct PixelFormat {
+    bits_per_pixel: u8,
+    depth: u8,
+    big_endian_flag: bool,
+    true_color_flag: bool,
+    red_max: u16,
+    green_max: u16,
+    blue_max: u16,
+    red_shift: u8,
+    green_shift: u8,
+    blue_shift: u8,
+}
+
+static PIXEL_FOMRAT_RGB888: &PixelFormat = &PixelFormat {
+    bits_per_pixel: 32,
+    depth: 24,
+    big_endian_flag: false,
+    true_color_flag: true,
+    red_max: 0xff,
+    green_max: 0xff,
+    blue_max: 0xff,
+    red_shift: 16,
+    green_shift: 8,
+    blue_shift: 0,
+};
+
 /// Handshake with client.
 /// From TCP connection established to initialization messages exchanged.
 pub(crate) async fn handshake(
     stream: &mut TcpStream,
     screen_dimensions: (u16, u16),
+    name: &str,
 ) -> anyhow::Result<()> {
     // RFC 6143: The Remote Framebuffer Protocol
     // 7.1.1. ProtocolVersion Handshake
@@ -106,7 +139,34 @@ pub(crate) async fn handshake(
     // Ignored, we always do sharing
 
     // 7.3.2. ServerInit
-    // TODO: impl ServerInit
-
+    stream.write_u16(screen_dimensions.0).await?; // width
+    stream.write_u16(screen_dimensions.1).await?; // height
+    stream.write_all(&PIXEL_FOMRAT_RGB888.encode()).await?;
+    let name_len: u32 = name.len().try_into().unwrap_or(u32::MAX);
+    stream.write_u32(name_len).await?;
+    stream.write_all(&name.as_bytes()[..name_len as usize]).await?;
     Ok(())
+}
+
+impl PixelFormat {
+    fn encode(&self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        let mut writer = &mut bytes[..];
+
+        writer.write_u8(self.bits_per_pixel).unwrap();
+        writer.write_u8(self.depth).unwrap();
+        writer.write_u8(self.big_endian_flag.into()).unwrap();
+        writer.write_u8(self.true_color_flag.into()).unwrap();
+    
+        writer.write_u16::<BE>(self.red_max).unwrap();
+        writer.write_u16::<BE>(self.green_max).unwrap();
+        writer.write_u16::<BE>(self.blue_max).unwrap();
+
+        writer.write_u8(self.red_shift).unwrap();
+        writer.write_u8(self.green_shift).unwrap();
+        writer.write_u8(self.blue_shift).unwrap();
+
+        // 3-byte trailing padding
+        bytes
+    }
 }

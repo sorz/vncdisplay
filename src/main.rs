@@ -30,8 +30,9 @@ async fn main() -> anyhow::Result<()> {
         let (stream, _) = listener.accept().await?;
         let peer = stream.peer_addr()?;
         let screen = screen.clone();
+        let name = args.name.clone();
         tokio::spawn(async move {
-            match handle_client(stream, screen).await {
+            match handle_client(stream, screen,  &name).await {
                 Ok(()) => debug!("Disconnected with {}", peer),
                 Err(err) => info!("Error on handle {}: {}", peer, err),
             }
@@ -39,8 +40,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn handle_client(mut stream: TcpStream, screen: Arc<Screen>) -> anyhow::Result<()> {
-    rfp::handshake(&mut stream, screen.dimensions)
+async fn handle_client(mut stream: TcpStream, screen: Arc<Screen>, name: &str) -> anyhow::Result<()> {
+    rfp::handshake(&mut stream, screen.dimensions, name)
         .await
         .context("RFP handshaking with client")?;
     Ok(())

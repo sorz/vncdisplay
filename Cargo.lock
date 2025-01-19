@@ -497,6 +497,7 @@ name = "vncdisplay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byteorder-lite",
  "clap",
  "env_logger",
  "image",

@@ -16,4 +16,10 @@ pub(crate) struct Args {
     /// Pointer picture
     #[arg(short, long)]
     pub(crate) pointer: Option<PathBuf>,
+
+    /// Desktop name
+    #[arg(short, long, default_value = "VNC Display")]
+    pub(crate) name: String,
+
+
 }
