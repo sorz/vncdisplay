@@ -1,7 +1,8 @@
-use std::io;
+use std::io::{self, BufRead, Read};
 
 use anyhow::{bail, Context};
-use byteorder_lite::{WriteBytesExt, BE};
+use byteorder_lite::{WriteBytesExt, BE, ReadBytesExt};
+use flate2::read;
 use log::debug;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -24,7 +25,7 @@ enum RfpVersion {
 
 /// RFC6143 §7.4. Pixel Format Data Structure
 #[derive(Debug, Clone, Copy)]
-struct PixelFormat {
+pub(crate) struct PixelFormat {
     bits_per_pixel: u8,
     depth: u8,
     big_endian_flag: bool,
@@ -50,10 +51,33 @@ static PIXEL_FOMRAT_RGB888: &PixelFormat = &PixelFormat {
     blue_shift: 0,
 };
 
+impl Default for PixelFormat {
+    fn default() -> Self {
+        *PIXEL_FOMRAT_RGB888
+    }
+}
+
+impl PixelFormat {
+    fn read_from<R: Read>(reader: &mut R) -> anyhow::Result<Self> {
+        Ok(PixelFormat {
+            bits_per_pixel: reader.read_u8()?,
+            depth: reader.read_u8()?,
+            big_endian_flag: reader.read_u8()? > 0,
+            true_color_flag: reader.read_u8()? > 0,
+            red_max: reader.read_u16::<BE>()?,
+            green_max: reader.read_u16::<BE>()?,
+            blue_max: reader.read_u16::<BE>()?,
+            red_shift: reader.read_u8()?,
+            green_shift: reader.read_u8()?,
+            blue_shift: reader.read_u8()?,
+        })
+    }
+} 
+
 /// RFC6143 §7.5. Client-to-Server Messages
 #[derive(Debug, Clone)]
 pub(crate) enum ClientMessage {
-    SetPixelFormat,
+    SetPixelFormat(PixelFormat),
     SetEncodings(Vec<Encoding>),
     FramebufferUpdateRequest {
         incremental: bool,
@@ -242,7 +266,9 @@ pub(crate) async fn read_message(
             // SetPixelFormat
             buf.resize(3 + 16, 0);
             stream.read_exact(buf).await?;
-            ClientMessage::SetPixelFormat
+            let mut reader = &buf[3..];
+            let format = PixelFormat::read_from(&mut reader)?;
+            ClientMessage::SetPixelFormat(format)
         }
         Ok(2) => {
             // SetEncodings

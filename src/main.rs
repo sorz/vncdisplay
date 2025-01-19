@@ -52,8 +52,8 @@ async fn handle_client(
     let mut buf = vec![0u8; 0];
     while let Some(msg) = rfp::read_message(&mut stream, &mut buf).await? {
         match msg {
-            rfp::ClientMessage::SetPixelFormat => {
-                debug!("Receive client message: {:?}", msg);
+            rfp::ClientMessage::SetPixelFormat(format) => {
+                debug!("Client set pixel format: {:?}", format);
                 // TODO: change pixel format?
             }
             rfp::ClientMessage::SetEncodings(encodings) => {
