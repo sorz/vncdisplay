@@ -5,6 +5,13 @@ use tokio::{
     net::TcpStream,
 };
 
+static SECURITY_TYPE_NO_AUTHENTICATION: u8 = 1;
+static SECURITY_RESULT_OK: u32 = 0;
+static SECURITY_RESULT_FAILED: u32 = 1;
+
+static ERROR_REASON_PROTOCOL_VERSION_UNSUPPORTED: &str = "Unsupported protocol version";
+static ERROR_REASON_SECURITY_TYPE_UNSUPPORTED: &str = "Unsupported security type";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RfpVersion {
     V3_3,
@@ -12,16 +19,12 @@ enum RfpVersion {
     V3_8,
 }
 
-static SECURITY_TYPE_NO_AUTHENTICATION: u8 = 0;
-static SECURITY_RESULT_OK: u32 = 0;
-static SECURITY_RESULT_FAILED: u32 = 1;
-
-static ERROR_REASON_PROTOCOL_VERSION_UNSUPPORTED: &str = "Unsupported protocol version";
-static ERROR_REASON_SECURITY_TYPE_UNSUPPORTED: &str = "Unsupported security type";
-
 /// Handshake with client.
 /// From TCP connection established to initialization messages exchanged.
-pub(crate) async fn handshake(stream: &mut TcpStream) -> anyhow::Result<()> {
+pub(crate) async fn handshake(
+    stream: &mut TcpStream,
+    screen_dimensions: (u16, u16),
+) -> anyhow::Result<()> {
     // RFC 6143: The Remote Framebuffer Protocol
     // 7.1.1. ProtocolVersion Handshake
     stream
