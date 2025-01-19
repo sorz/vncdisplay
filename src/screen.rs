@@ -6,7 +6,6 @@ use image::{ImageReader, RgbImage};
 pub(crate) struct Screen {
     background: RgbImage,
     pub(crate) dimensions: (u16, u16),
-    pub(crate) framebuffer_raw: Vec<u8>,
 }
 
 impl Screen {
@@ -27,7 +26,13 @@ impl Screen {
         Ok(Self {
             background,
             dimensions,
-            framebuffer_raw: Vec::new(),
         })
+    }
+
+    pub(crate) fn draw_raw(&self) -> Vec<u8> {
+        self.background
+            .pixels()
+            .flat_map(|p| [p.0[2], p.0[1], p.0[0], 0])
+            .collect()
     }
 }

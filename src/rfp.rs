@@ -55,7 +55,11 @@ static PIXEL_FOMRAT_RGB888: &PixelFormat = &PixelFormat {
 pub(crate) enum ClientMessage {
     SetPixelFormat,
     SetEncodings(Vec<Encoding>),
-    FramebufferUpdateRequest,
+    FramebufferUpdateRequest {
+        incremental: bool,
+        position: (u16, u16),
+        size: (u16, u16),
+    },
     KeyEvent,
     PointerEvent,
     ClientCutText,
@@ -210,7 +214,17 @@ pub(crate) async fn read_message(
             // FramebufferUpdateRequest
             buf.resize(1 + 2 + 2 + 2 + 2, 0);
             stream.read_exact(buf).await?;
-            ClientMessage::FramebufferUpdateRequest
+            ClientMessage::FramebufferUpdateRequest {
+                incremental: buf[0] > 0,
+                position: (
+                    u16::from_be_bytes([buf[1], buf[2]]),
+                    u16::from_be_bytes([buf[3], buf[4]]),
+                ),
+                size: (
+                    u16::from_be_bytes([buf[5], buf[6]]),
+                    u16::from_be_bytes([buf[7], buf[8]]),
+                ),
+            }
         }
         Ok(4) => {
             // KeyEvent
@@ -236,6 +250,24 @@ pub(crate) async fn read_message(
         Ok(n) => bail!("Unknown client message: {}", n),
     };
     Ok(Some(msg))
+}
+
+pub(crate) async fn write_frame(
+    stream: &mut TcpStream,
+    position: (u16, u16),
+    size: (u16, u16),
+    frame: &[u8],
+) -> anyhow::Result<()> {
+    // 7.6.1. FramebufferUpdate
+    // message-type (0u8), padding (0u8), number-of-rectangles (1u16),
+    stream.write_all(&[0, 0, 0, 1, 0, 0, 0, 0]).await?;
+    stream.write_u16(position.0).await?;
+    stream.write_u16(position.1).await?;
+    stream.write_u16(size.0).await?;
+    stream.write_u16(size.1).await?;
+    stream.write_i32(0).await?; // encoding-type: Raw (0)
+    stream.write_all(frame).await?;
+    Ok(())
 }
 
 impl PixelFormat {
