@@ -2,7 +2,7 @@ use std::io;
 
 use anyhow::{bail, Context};
 use byteorder_lite::{WriteBytesExt, BE};
-use log::{debug, info, warn};
+use log::debug;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -81,6 +81,17 @@ impl From<i32> for Encoding {
             16 => Self::Zrle,
             -239 => Self::Cursor,
             n => Self::Other(n),
+        }
+    }
+}
+
+impl From<Encoding> for i32 {
+    fn from(val: Encoding) -> Self {
+        match val {
+            Encoding::Raw => 0,
+            Encoding::Zrle => 16,
+            Encoding::Cursor => -239,
+            Encoding::Other(value) => value,
         }
     }
 }
@@ -256,16 +267,27 @@ pub(crate) async fn write_frame(
     stream: &mut TcpStream,
     position: (u16, u16),
     size: (u16, u16),
+    encoding: Encoding,
     frame: &[u8],
 ) -> anyhow::Result<()> {
     // 7.6.1. FramebufferUpdate
     // message-type (0u8), padding (0u8), number-of-rectangles (1u16),
-    stream.write_all(&[0, 0, 0, 1, 0, 0, 0, 0]).await?;
+    stream.write_all(&[0, 0, 0, 1]).await?;
     stream.write_u16(position.0).await?;
     stream.write_u16(position.1).await?;
     stream.write_u16(size.0).await?;
     stream.write_u16(size.1).await?;
-    stream.write_i32(0).await?; // encoding-type: Raw (0)
+    stream.write_i32(encoding.into()).await?;
+    match encoding {
+        Encoding::Raw => (), // just send the fram buffer
+        Encoding::Zrle => {
+            // 7.7.6. ZRLE
+            stream.write_u32(frame.len().try_into()?).await?;
+        }
+        Encoding::Cursor => todo!(),
+        Encoding::Other(_) => todo!(),
+    }
+
     stream.write_all(frame).await?;
     Ok(())
 }

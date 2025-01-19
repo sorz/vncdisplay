@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
+use flate2::write::ZlibEncoder;
 use log::{debug, info};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -45,20 +46,47 @@ async fn handle_client(
     rfp::handshake(&mut stream, dims, name)
         .await
         .context("RFP handshaking with client")?;
+    let mut zlib: Option<ZlibEncoder<Vec<u8>>> = None;
     let mut buf = vec![0u8; 0];
     while let Some(msg) = rfp::read_message(&mut stream, &mut buf).await? {
-        debug!("Receive client message: {:?}", msg);
         match msg {
-            rfp::ClientMessage::SetPixelFormat => (),
+            rfp::ClientMessage::SetPixelFormat => {
+                debug!("Receive client message: {:?}", msg);
+            }
             rfp::ClientMessage::SetEncodings(encodings) => {
                 debug!("Client set encodings: {:?}", encodings);
+                if encodings.contains(&rfp::Encoding::Zrle) {
+                    let encoder = ZlibEncoder::new(Vec::new(), Default::default());
+                    zlib = Some(encoder);
+                }
             }
             rfp::ClientMessage::FramebufferUpdateRequest { incremental, .. } => {
+                debug!("Receive client message: {:?}", msg);
                 if incremental {
                     continue; // TODO: send empty update instead of ignoring
                 }
-                let frame = screen.draw_raw();
-                rfp::write_frame(&mut stream, (0, 0), screen.dimensions, &frame).await?;
+                if let Some(encoder) = zlib.as_mut() {
+                    let frame = screen.draw_zrle(encoder)?;
+
+                    rfp::write_frame(
+                        &mut stream,
+                        (0, 0),
+                        screen.dimensions,
+                        rfp::Encoding::Zrle,
+                        &frame,
+                    )
+                    .await?;
+                } else {
+                    let frame = screen.draw_raw();
+                    rfp::write_frame(
+                        &mut stream,
+                        (0, 0),
+                        screen.dimensions,
+                        rfp::Encoding::Raw,
+                        &frame,
+                    )
+                    .await?;
+                }
             }
             rfp::ClientMessage::KeyEvent
             | rfp::ClientMessage::PointerEvent

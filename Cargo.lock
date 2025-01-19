@@ -500,6 +500,7 @@ dependencies = [
  "byteorder-lite",
  "clap",
  "env_logger",
+ "flate2",
  "image",
  "log",
  "tokio",

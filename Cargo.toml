@@ -11,3 +11,4 @@ log = "0.4"
 env_logger = "0.11"
 tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util"] }
 byteorder-lite = "0.1"
+flate2 = "1"
