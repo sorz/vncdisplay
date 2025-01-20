@@ -123,9 +123,9 @@ impl PixelFormat {
         W: Write,
     {
         let rgb_max = [
-            self.red_max as u32,
-            self.green_max as u32,
-            self.blue_max as u32,
+            self.red_max as f32,
+            self.green_max as f32,
+            self.blue_max as f32,
         ];
         if !self.true_color_flag {
             bail!("Unimplemented: true color only")
@@ -134,7 +134,7 @@ impl PixelFormat {
         for Rgb(rgb) in pixels {
             let mut pixel = 0u32;
             for i in 0..3 {
-                pixel |= (rgb[i] as u32 * rgb_max[i] / 0xff) << rgb_shift[i]
+                pixel |= ((rgb[i] as f32 / 255.0 * rgb_max[i]).round() as u32) << rgb_shift[i]
             }
             match self.bits_per_pixel {
                 8 => writer.write_u8(pixel as u8)?,
