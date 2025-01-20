@@ -1,8 +1,8 @@
-use std::io::{self, BufRead, Read};
+use std::io::{self, Read, Write};
 
 use anyhow::{bail, Context};
-use byteorder_lite::{WriteBytesExt, BE, ReadBytesExt};
-use flate2::read;
+use byteorder_lite::{ReadBytesExt, WriteBytesExt, BE, LE};
+use image::Rgb;
 use log::debug;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -26,16 +26,16 @@ enum RfpVersion {
 /// RFC6143 §7.4. Pixel Format Data Structure
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PixelFormat {
-    bits_per_pixel: u8,
-    depth: u8,
-    big_endian_flag: bool,
-    true_color_flag: bool,
-    red_max: u16,
-    green_max: u16,
-    blue_max: u16,
-    red_shift: u8,
-    green_shift: u8,
-    blue_shift: u8,
+    pub(crate) bits_per_pixel: u8,
+    pub(crate) depth: u8,
+    pub(crate) big_endian_flag: bool,
+    pub(crate) true_color_flag: bool,
+    pub(crate) red_max: u16,
+    pub(crate) green_max: u16,
+    pub(crate) blue_max: u16,
+    pub(crate) red_shift: u8,
+    pub(crate) green_shift: u8,
+    pub(crate) blue_shift: u8,
 }
 
 static PIXEL_FOMRAT_RGB888: &PixelFormat = &PixelFormat {
@@ -59,7 +59,7 @@ impl Default for PixelFormat {
 
 impl PixelFormat {
     fn read_from<R: Read>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(PixelFormat {
+        let format = PixelFormat {
             bits_per_pixel: reader.read_u8()?,
             depth: reader.read_u8()?,
             big_endian_flag: reader.read_u8()? > 0,
@@ -70,9 +70,84 @@ impl PixelFormat {
             red_shift: reader.read_u8()?,
             green_shift: reader.read_u8()?,
             blue_shift: reader.read_u8()?,
-        })
+        };
+        // 7.4.  Pixel Format Data Structure
+        // bits-per-pixel must be 8, 16, or 32
+        match format.bits_per_pixel {
+            8 | 16 | 32 => (),
+            _ => bail!("bits-per-pixel must be 8, 16, or 32"),
+        }
+        if format.depth > format.bits_per_pixel {
+            bail!("depth exceeds bits_per_pixel")
+        }
+        Ok(format)
     }
-} 
+
+    pub(crate) fn bytes_per_pixel(&self) -> usize {
+        self.bits_per_pixel as usize / 8
+    }
+
+    pub(crate) fn encode_compressed_pixels<P, W>(
+        &self,
+        pixels: P,
+        writer: &mut W,
+    ) -> anyhow::Result<()>
+    where
+        P: Iterator<Item = Rgb<u8>>,
+        W: Write,
+    {
+        // 7.7.5. TRLE
+        // Check eligibility
+        if !self.true_color_flag || self.bits_per_pixel != 32 || self.depth > 24 {
+            // FIXME: check bitmask
+            // Fallback to uncompressed pixels
+            return self.encode_pixels(pixels, writer);
+        }
+        // Use compressed pxiel format
+        if self.depth != 24 {
+            bail!("Unimplemented: color depth within (16, 24)");
+        }
+        for Rgb([r, g, b]) in pixels {
+            if self.big_endian_flag {
+                writer.write_all(&[r, g, b])?;
+            } else {
+                writer.write_all(&[b, g, r])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn encode_pixels<P, W>(&self, pixels: P, writer: &mut W) -> anyhow::Result<()>
+    where
+        P: Iterator<Item = Rgb<u8>>,
+        W: Write,
+    {
+        let rgb_max = [
+            self.red_max as u32,
+            self.green_max as u32,
+            self.blue_max as u32,
+        ];
+        if !self.true_color_flag {
+            bail!("Unimplemented: true color only")
+        }
+        let rgb_shift = [self.red_shift, self.green_shift, self.blue_shift];
+        for Rgb(rgb) in pixels {
+            let mut pixel = 0u32;
+            for i in 0..3 {
+                pixel |= (rgb[i] as u32 * rgb_max[i] / 0xff) << rgb_shift[i]
+            }
+            match self.bits_per_pixel {
+                8 => writer.write_u8(pixel as u8)?,
+                16 if self.big_endian_flag => writer.write_u16::<BE>(pixel as u16)?,
+                16 => writer.write_u16::<LE>(pixel as u16)?,
+                32 if self.big_endian_flag => writer.write_u32::<BE>(pixel)?,
+                32 => writer.write_u32::<LE>(pixel)?,
+                _ => bail!("bits_per_pixel must be 8, 16, or 32"),
+            }
+        }
+        Ok(())
+    }
+}
 
 /// RFC6143 §7.5. Client-to-Server Messages
 #[derive(Debug, Clone)]

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Context;
 use clap::Parser;
 use flate2::write::ZlibEncoder;
@@ -20,7 +18,6 @@ async fn main() -> anyhow::Result<()> {
 
     let screen = Screen::create(args.background, args.pointer)
         .context("Create screen from background picture")?;
-    let screen = Arc::new(screen);
 
     info!("Listen on {}", args.listen);
     let listener = TcpListener::bind(args.listen).await?;
@@ -40,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn handle_client(
     mut stream: TcpStream,
-    screen: Arc<Screen>,
+    mut screen: Screen,
     name: &str,
 ) -> anyhow::Result<()> {
     let dims = screen.dimensions;
@@ -48,13 +45,15 @@ async fn handle_client(
         .await
         .context("RFP handshaking with client")?;
     let mut zlib: Option<ZlibEncoder<Vec<u8>>> = None;
-    let mut pointer: Option<FrameRectangle> = None;
+    let mut pointer_supported = false;
     let mut buf = vec![0u8; 0];
     while let Some(msg) = rfp::read_message(&mut stream, &mut buf).await? {
         match msg {
             rfp::ClientMessage::SetPixelFormat(format) => {
                 debug!("Client set pixel format: {:?}", format);
-                // TODO: change pixel format?
+                screen
+                    .set_pixel_format(format)
+                    .context("Unsupported pixel format")?;
             }
             rfp::ClientMessage::SetEncodings(encodings) => {
                 debug!("Client set encodings: {:?}", encodings);
@@ -63,9 +62,7 @@ async fn handle_client(
                     zlib = Some(encoder);
                 }
                 if encodings.contains(&rfp::Encoding::Cursor) {
-                    pointer = screen
-                        .draw_cursor()
-                        .map(|buf| FrameRectangle::new_cursor(screen.pointer_size(), buf));
+                    pointer_supported = true;
                 }
             }
             rfp::ClientMessage::FramebufferUpdateRequest { incremental, .. } => {
@@ -76,9 +73,10 @@ async fn handle_client(
                 let rect = if let Some(encoder) = zlib.as_mut() {
                     FrameRectangle::new_zrle_frame(screen.dimensions, screen.draw_zrle(encoder)?)
                 } else {
-                    FrameRectangle::new_raw_frame(screen.dimensions, screen.draw_raw())
+                    FrameRectangle::new_raw_frame(screen.dimensions, screen.draw_raw()?)
                 };
-                if let Some(pointer) = pointer.take() {
+                if let Some(pointer) = screen.draw_cursor().take_if(|_| pointer_supported) {
+                    let pointer = FrameRectangle::new_cursor(screen.pointer_size(), pointer);
                     rfp::write_frame(&mut stream, &[rect, pointer]).await?;
                 } else {
                     rfp::write_frame(&mut stream, &[rect]).await?;

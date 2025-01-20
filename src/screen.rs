@@ -1,9 +1,10 @@
-use std::{io::Write, mem, path::Path};
+use std::{io::Write, mem, path::Path, sync::Arc};
 
 use anyhow::{bail, Context};
-use byteorder_lite::WriteBytesExt;
 use flate2::write::ZlibEncoder;
 use image::{GenericImageView, ImageReader, RgbImage};
+
+use crate::rfp::PixelFormat;
 
 const ZRLE_TILE_SIZE: u32 = 64;
 
@@ -12,10 +13,12 @@ pub(crate) struct Pointer {
     bitmask: Box<[u8]>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Screen {
-    background: RgbImage,
+    background: Arc<RgbImage>,
     pub(crate) dimensions: (u16, u16),
-    pointer: Option<Pointer>,
+    pointer: Option<Arc<Pointer>>,
+    format: PixelFormat,
 }
 
 impl Screen {
@@ -34,6 +37,7 @@ impl Screen {
         let width: u16 = width.try_into().context("Width must less than 65536")?;
         let height: u16 = height.try_into().context("Height must less than 65536")?;
         let dimensions = (width, height);
+        let background = Arc::new(background);
 
         // Read pointer
         let pointer = match pointer {
@@ -62,10 +66,11 @@ impl Screen {
                         bitmask.push(mask);
                     }
                 }
-                Some(Pointer {
+                let pointer = Pointer {
                     image: rgb888,
                     bitmask: bitmask.into_boxed_slice(),
-                })
+                };
+                Some(Arc::new(pointer))
             }
             None => None,
         };
@@ -74,7 +79,16 @@ impl Screen {
             background,
             dimensions,
             pointer,
+            format: Default::default(),
         })
+    }
+
+    pub(crate) fn set_pixel_format(&mut self, format: PixelFormat) -> anyhow::Result<()> {
+        if !format.true_color_flag {
+            bail!("no true color")
+        }
+        self.format = format;
+        Ok(())
     }
 
     pub(crate) fn pointer_size(&self) -> (u16, u16) {
@@ -85,26 +99,29 @@ impl Screen {
     }
 
     pub(crate) fn draw_cursor(&self) -> Option<Vec<u8>> {
-        let Pointer { image, bitmask } = self.pointer.as_ref()?;
-        let mut buf: Vec<_> = image
-            .pixels()
-            .flat_map(|p| [p.0[2], p.0[1], p.0[0], 0])
-            .collect();
+        let Pointer { image, bitmask } = self.pointer.as_ref()?.as_ref();
+        let mut buf =
+            Vec::with_capacity(self.format.bytes_per_pixel() * image.len() + bitmask.len());
+        self.format
+            .encode_pixels(image.pixels().cloned(), &mut buf)
+            .ok()?;
         buf.extend_from_slice(bitmask);
         Some(buf)
     }
 
-    pub(crate) fn draw_raw(&self) -> Vec<u8> {
-        self.background
-            .pixels()
-            .flat_map(|p| [p.0[2], p.0[1], p.0[0], 0])
-            .collect()
+    pub(crate) fn draw_raw(&self) -> anyhow::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(self.format.bytes_per_pixel() * self.background.len());
+        self.format
+            .encode_pixels(self.background.pixels().cloned(), &mut buf)?;
+        Ok(buf)
     }
 
     pub(crate) fn draw_zrle(&self, encoder: &mut ZlibEncoder<Vec<u8>>) -> anyhow::Result<Vec<u8>> {
         let screen_width = self.dimensions.0 as u32;
         let screen_height = self.dimensions.1 as u32;
-        let mut buf = [0u8; (ZRLE_TILE_SIZE * ZRLE_TILE_SIZE) as usize * 3];
+        let mut buf = Vec::with_capacity(
+            (ZRLE_TILE_SIZE * ZRLE_TILE_SIZE) as usize * self.format.bytes_per_pixel(),
+        );
 
         for tile_y in 0..screen_height.div_ceil(ZRLE_TILE_SIZE) {
             for tile_x in 0..screen_width.div_ceil(ZRLE_TILE_SIZE) {
@@ -113,18 +130,12 @@ impl Screen {
                 let width = ZRLE_TILE_SIZE.clamp(0, screen_width - x);
                 let height = ZRLE_TILE_SIZE.clamp(0, screen_height - y);
 
-                let buf = &mut buf[..(width * height * 3) as usize];
-                self.background
-                    .view(x, y, width, height)
-                    .pixels()
-                    .zip(buf.chunks_mut(3))
-                    .for_each(|((_, _, p), b)| {
-                        b[0] = p.0[2];
-                        b[1] = p.0[1];
-                        b[2] = p.0[0];
-                    });
-                encoder.write_u8(0).unwrap(); // no RLE, no palette
-                encoder.write_all(buf).unwrap();
+                buf.clear();
+                buf.push(0); // no RLE, no palette
+                let tile = self.background.view(x, y, width, height);
+                let pixels = tile.pixels().map(|(_, _, p)| p);
+                self.format.encode_compressed_pixels(pixels, &mut buf)?;
+                encoder.write_all(&buf).unwrap();
             }
         }
 
