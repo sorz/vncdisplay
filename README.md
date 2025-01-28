@@ -5,6 +5,7 @@ Features:
 
 - Custom background & pointer pictures
 - Custom desktop name
+- RFP (Remote Framebuffer Protocol) version 3.3, 3.7, and 3.8
 - No authentication
 - Pixel formats
     - True color (variable bit length)
