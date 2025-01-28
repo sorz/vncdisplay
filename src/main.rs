@@ -23,7 +23,15 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(args.listen).await?;
     loop {
         let (stream, _) = listener.accept().await?;
-        let peer = stream.peer_addr()?;
+        let peer = match stream.peer_addr() {
+            Ok(peer) => peer,
+            Err(err) => {
+                info!("Connect error: {}", err);
+                continue;
+            }
+        };
+        debug!("Connected with {}", peer);
+
         let screen = screen.clone();
         let name = args.name.clone();
         tokio::spawn(async move {
